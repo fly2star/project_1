@@ -180,3 +180,68 @@ def consistency_learning_loss(view1_feature, view2_feature, tau=1.0, device=None
     
     return loss1 + loss2
 
+
+def get_train_category_credibility(predict, labels):
+    """
+    根据模型的预测（隶属度）和真实标签，计算训练时的类别可信度。
+    移植自 FUME 论文的 processor.py。
+    
+    :param predict: 模型的原始预测，shape: [batch_size, num_classes]
+    :param labels: 真实标签 (one-hot)，shape: [batch_size, num_classes]
+    :return: 类别可信度 r, shape: [batch_size, num_classes]
+    """
+    # 确保 labels 是 float 类型以进行乘法操作
+    labels = labels.float()
+    
+    # 找出对于真实为负的类别中，模型给出的最高分
+    top1Possibility = (predict * (1 - labels)).max(1)[0].reshape([-1, 1])
+
+    # 找出对于真实为正的类别中，模型给出的分数
+    labelPossibility = (predict * labels).max(1)[0].reshape([-1, 1])
+
+    # 计算“必要性 (neccessity)”
+    neccessity = (1 - labelPossibility) * (1 - labels) + (1 - top1Possibility) * labels
+
+    # 最终的可信度 = (模型原始预测 + 必要性) / 2
+    r = (predict + neccessity) / 2
+    return r
+
+
+def bayesian_uncertainty_loss(loss_elementwise, uncertainty, lambda_reg=0.5):
+    """
+    基于贝叶斯风险最小化的损失函数。
+    利用不确定性 u 对原始损失进行加权。
+    
+    公式: L = (Loss / (u + eps)) + lambda * log(u + eps)
+    
+    :param loss_elementwise: 每个样本的原始损失，shape [bs, 1] 或 [bs]
+    :param uncertainty: 每个样本的不确定性 u，shape [bs, 1] 或 [bs]
+    :param lambda_reg: 正则项的权重，防止不确定性无限增大
+    """
+    eps = 1e-6
+    # 确保维度匹配
+    uncertainty = uncertainty.view_as(loss_elementwise)
+    
+    # 1. 损失缩放项：不确定性越大，原本的损失权重越小
+    #    这允许模型在困难样本上“减负”
+    weighted_loss = loss_elementwise / (uncertainty + eps)
+    
+    # 2. 正则化项：惩罚过大的不确定性
+    #    迫使模型在能学懂的地方尽量降低不确定性
+    regularization = torch.log(uncertainty + eps)
+    
+    # 组合
+    total_loss = weighted_loss + lambda_reg * regularization
+    
+    return total_loss.mean()
+
+def vib_kl_loss(mu, logvar):
+    """
+    计算 VIB 的 KL 散度损失。
+    KL(N(mu, sigma^2) || N(0, I))
+    公式: -0.5 * sum(1 + log(sigma^2) - mu^2 - sigma^2)
+    """
+    # logvar = log(sigma^2)
+    # 这里的求和是针对 bit 维度，最后对 batch 取平均
+    kl_div = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)
+    return kl_div.mean()
