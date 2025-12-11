@@ -364,7 +364,7 @@ def main():
                 t = min(1.0, float(epoch) / float(warm_up))
                 loss_fml_mix = (1.0 - t) * loss_fml + t * loss_fml_bayes
                 # loss = args.alpha * loss_dech + args.delta * loss_joint + args.beta * loss_fml_mix + args.gamma * loss_cl + args.eta * loss_vib
-                loss = args.alpha * loss_dech + args.delta * loss_q + args.beta * loss_fml + args.gamma * loss_cl + args.eta * loss_vib
+                loss = args.alpha * loss_dech + args.delta * loss_q + args.beta * loss_fml_mix + args.gamma * loss_cl + args.eta * loss_vib
                 
                 
                 

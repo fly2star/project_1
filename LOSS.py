@@ -89,12 +89,14 @@ def edl_log_loss(output, target, epoch_num, num_classes, annealing_step, device=
         torch.log, target, alpha, epoch_num, num_classes, annealing_step, device
     )
 
-    if args.L3idx == 5:
-        l3Loss = 1 / (TrueEvidence + 1e-5)
-    elif args.L3idx == 1:
-        l3Loss = -torch.log((TrueEvidence).tanh())
-    elif args.L3idx == 2:
-        l3Loss = torch.log(1 + 1 / TrueEvidence)
+    # if args.L3idx == 5:
+    #     l3Loss = 1 / (TrueEvidence + 1e-5)
+    # elif args.L3idx == 1:
+    #     l3Loss = -torch.log((TrueEvidence).tanh())
+    # elif args.L3idx == 2:
+    #     l3Loss = torch.log(1 + 1 / TrueEvidence)
+
+    l3Loss = - torch.log((TrueEvidence).tanh() + 1e-6) 
 
     return loss + l3Loss.mean()
 
@@ -139,6 +141,12 @@ def calculate_quantization_loss(image_hash_codes, text_hash_codes, device=None):
     目标：最小化连续哈希码与二值哈希码之间的距离。
     公式: L_q = || H - sign(H) ||^2
     """
+    if not device:
+        device = get_device()
+    
+    image_hash_codes = image_hash_codes.to(device)
+    text_hash_codes = text_hash_codes.to(device)
+
     # 1. 生成目标二值码 B
     # sign() 函数不可导，所以必须使用 .detach() 将其从计算图中剥离
     # 我们把 B 当作一个固定的“锚点”，让 H 去拟合它
@@ -291,6 +299,7 @@ def bayesian_uncertainty_loss(loss_elementwise, uncertainty, lambda_reg=0.5):
     """
     基于贝叶斯风险最小化的损失函数。
     利用不确定性 u 对原始损失进行加权。
+    1211, 修改说明：增加了 clamp, 防止梯度爆炸
     
     公式: L = (Loss / (u + eps)) + lambda * log(u + eps)
     
@@ -301,14 +310,19 @@ def bayesian_uncertainty_loss(loss_elementwise, uncertainty, lambda_reg=0.5):
     eps = 1e-6
     # 确保维度匹配
     uncertainty = uncertainty.view_as(loss_elementwise)
+
+    # 安全锁: 防止 u 过小导致 loss 暴增
+    # 设置 min=0.05 意味着损失最多放大 20 倍 (1/0.05)
+    # 这能有效保护 Epoch 2 的参数不被破坏
+    u_clamped = torch.clamp(uncertainty, min=0.05)
     
     # 1. 损失缩放项：不确定性越大，原本的损失权重越小
-    #    这允许模型在困难样本上“减负”
-    weighted_loss = loss_elementwise / (uncertainty + eps)
+    #    使用经过 clamp 的 u
+    weighted_loss = loss_elementwise / (u_clamped + eps)
     
-    # 2. 正则化项：惩罚过大的不确定性
-    #    迫使模型在能学懂的地方尽量降低不确定性
-    regularization = torch.log(uncertainty + eps)
+    # 2. 正则化项：仍然可以使用原始 u 或者 clamped u
+    # 使用 clamped u 可以防止 log(0) 导致负无穷，虽然有 eps，但 clamp 更安全
+    regularization = torch.log(u_clamped + eps)
     
     # 组合
     total_loss = weighted_loss + lambda_reg * regularization
