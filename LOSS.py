@@ -218,6 +218,9 @@ def consistency_learning_loss(view1_feature, view2_feature, weights=None, tau=1.
     view1_feature = view1_feature.to(device)
     view2_feature = view2_feature.to(device)
 
+    view1_feature = F.normalize(view1_feature, p=2, dim=1)
+    view2_feature = F.normalize(view2_feature, p=2, dim=1)
+
     # --- FUME 原始代码逻辑开始 ---
     n_view = 2
     batch_size = view1_feature.shape[0]
