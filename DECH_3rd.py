@@ -97,6 +97,7 @@ def generate_data_laoder():
     )
     return train_loader,query_loader,retrieval_loader,4096,retrieval_dataset.text_dim
 
+# 版本 1
 # def generate_hash_code(data_loader,image_model,text_model):
 #     imgs, txts, labs = [], [], []
 #     # imgs_fea,txts_fea = [],[]
@@ -114,38 +115,108 @@ def generate_data_laoder():
         
 #     return imgs,txts,labs
 
-def generate_hash_code(data_loader, image_model, text_model):
-    imgs_list = []
-    txts_list = []
-    labs_list = []
+# 版本 2
+# def generate_hash_code(data_loader, image_model, text_model):
+#     imgs_list = []
+#     txts_list = []
+#     labs_list = []
     
+#     image_model.eval()
+#     text_model.eval()
+
+#     with torch.no_grad():
+#         # 注意：这里可能需要 tqdm
+#         for batch_idx, (images, texts, targets) in tqdm(enumerate(data_loader), total=len(data_loader), desc="Generating Hash Codes for Eval"):
+#             images = images.cuda().float()
+#             texts = texts.cuda().float()
+            
+#             # 1. 获取字典输出
+#             image_outputs_dict = image_model(images)
+#             text_outputs_dict = text_model(texts)
+
+#             # 2. 提取 hash_code 并转到 CPU
+#             img_h = image_outputs_dict["hash_code"].cpu()
+#             txt_h = text_outputs_dict["hash_code"].cpu()
+            
+#             imgs_list.append(img_h)
+#             txts_list.append(txt_h)
+#             labs_list.append(targets.float())
+
+#     # 3. 循环外拼接
+#     imgs = torch.cat(imgs_list).sign()
+#     txts = torch.cat(txts_list).sign()
+#     labs = torch.cat(labs_list)
+
+#     return imgs, txts, labs
+
+# 版本 3
+def generate_hash_code(dataloader, image_model, text_model, evidence_model, gcn_img, gcn_txt):
+    """
+    修改后的哈希码生成函数，包含 GCN 微调逻辑。
+    """
+    # 切换到评估模式 (这就关闭了 Dropout)
     image_model.eval()
     text_model.eval()
+    evidence_model.eval()
+    gcn_img.eval()
+    gcn_txt.eval()
+    
+    bs_img_list, bs_txt_list, bs_label_list = [], [], []
 
-    with torch.no_grad():
-        # 注意：这里可能需要 tqdm
-        for batch_idx, (images, texts, targets) in tqdm(enumerate(data_loader), total=len(data_loader), desc="Generating Hash Codes for Eval"):
-            images = images.cuda().float()
-            texts = texts.cuda().float()
+    with torch.no_grad(): # 评估时不需要计算梯度
+        for img, txt, label in dataloader:
+            img = img.cuda().float()
+            txt = txt.cuda().float()
             
-            # 1. 获取字典输出
-            image_outputs_dict = image_model(images)
-            text_outputs_dict = text_model(texts)
-
-            # 2. 提取 hash_code 并转到 CPU
-            img_h = image_outputs_dict["hash_code"].cpu()
-            txt_h = text_outputs_dict["hash_code"].cpu()
+            # 1. 获取原始哈希码 (Raw Hash)
+            img_out = image_model(img)
+            txt_out = text_model(txt)
+            img_hash_raw = img_out["hash_code"]
+            txt_hash_raw = txt_out["hash_code"]
             
-            imgs_list.append(img_h)
-            txts_list.append(txt_h)
-            labs_list.append(targets.float())
+            bs = img.size(0)
 
-    # 3. 循环外拼接
-    imgs = torch.cat(imgs_list).sign()
-    txts = torch.cat(txts_list).sign()
-    labs = torch.cat(labs_list)
+            # 2. 计算不确定性 (用于 GCN 剪枝)
+            # 必须使用 raw hash 计算，逻辑与训练阶段 1 一致
+            evidencei2t = evidence_model(img_hash_raw, txt_hash_raw, 'i2t')
+            evidencet2i = evidence_model(img_hash_raw, txt_hash_raw, 't2i')
+            
+            # 计算 u (假设 num_classes_evidence=2)
+            alpha_i2t = evidencei2t + 1
+            S_i2t = torch.sum(alpha_i2t, dim=1, keepdim=True)
+            u_i2t_all = 2.0 / S_i2t
+            # 提取对角线
+            u_i2t_mat = u_i2t_all.view(bs,bs)
+            u_i2t_diag = u_i2t_mat.diag()
+            u_img = u_i2t_diag.view(-1, 1).detach() # [Batch, 1]
+            
+            alpha_t2i = evidencet2i + 1
+            S_t2i = torch.sum(alpha_t2i, dim=1, keepdim=True)
+            u_t2i_all = 2.0 / S_t2i
+            # 提取对角线
+            u_t2i_mat = u_t2i_all.view(bs,bs)
+            u_t2i_diag = u_t2i_mat.diag()
+            u_txt = u_t2i_diag.view(-1, 1).detach() # [Batch, 1]
+            
+            # 3. GCN 微调 (Refinement)
+            delta_img = gcn_img(img_hash_raw, u_img)
+            delta_txt = gcn_txt(txt_hash_raw, u_txt)
+            
+            # 4. 融合得到最终哈希码 (Final Hash)
+            # 注意：eval 模式下 alpha 也是加载进来的训练好的值
+            img_hash_final = img_hash_raw + gcn_img.alpha * delta_img
+            txt_hash_final = txt_hash_raw + gcn_txt.alpha * delta_txt
+            
+            # 5. 生成二值码 (用于计算 MAP)
+            # sign(H) -> {-1, 1}
+            code_img = torch.sign(img_hash_final)
+            code_txt = torch.sign(txt_hash_final)
+            
+            bs_img_list.append(code_img.cpu().data.numpy())
+            bs_txt_list.append(code_txt.cpu().data.numpy())
+            bs_label_list.append(label.cpu().data.numpy())
 
-    return imgs, txts, labs
+    return np.concatenate(bs_img_list), np.concatenate(bs_txt_list), np.concatenate(bs_label_list)
 
 def getbdu(evidence):
     L = (2+evidence[:,0]+evidence[:,1])
@@ -186,17 +257,41 @@ def fx_calc_map_multilabel_k(retrieval, retrieval_labels, query, query_label, k=
                 res += [tmp_label@prec/total_pos]
     return torch.mean(torch.tensor(res))
 
-def test(query_loader,retrieval_loader,image_model,text_model,evidence_model,epoch):
-    global pre_val,no_update_count,state_dict
-    # global state_dict
-    qX,qY,qL = generate_hash_code(query_loader,image_model,text_model)
-    rX,rY,rL = generate_hash_code(retrieval_loader,image_model,text_model)
-    MAPi2t = fx_calc_map_multilabel_k(rY,rL,qX,qL,None)
-    MAPt2i = fx_calc_map_multilabel_k(rX,rL,qY,qL,None)
+# def test(query_loader,retrieval_loader,image_model,text_model,evidence_model,epoch):
+#     global pre_val,no_update_count,state_dict
+#     # global state_dict
+#     qX,qY,qL = generate_hash_code(query_loader,image_model,text_model)
+#     rX,rY,rL = generate_hash_code(retrieval_loader,image_model,text_model)
+#     MAPi2t = fx_calc_map_multilabel_k(rY,rL,qX,qL,None)
+#     MAPt2i = fx_calc_map_multilabel_k(rX,rL,qY,qL,None)
 
-    # print(MAPi2t,MAPt2i)
-    # print(f"\nEval (epoch={epoch}): MAP(i→t)={MAPi2t:.4f}, MAP(t→i)={MAPt2i:.4f}")
+#     # print(MAPi2t,MAPt2i)
+#     # print(f"\nEval (epoch={epoch}): MAP(i→t)={MAPi2t:.4f}, MAP(t→i)={MAPt2i:.4f}")
+#     return MAPi2t, MAPt2i
+
+# 全新版本
+def test(query_loader, retrieval_loader, image_model, text_model, evidence_model, gcn_img, gcn_txt, epoch):
+    global pre_val, no_update_count, state_dict
+    
+    # 🌟 关键修改：将 GCN 传入 generate_hash_code
+    # 确保 generate_hash_code 已经按照我们上一步的讨论修改过，支持接收 GCN
+    qX, qY, qL = generate_hash_code(query_loader, image_model, text_model, evidence_model, gcn_img, gcn_txt)
+    rX, rY, rL = generate_hash_code(retrieval_loader, image_model, text_model, evidence_model, gcn_img, gcn_txt)
+
+    # 修复
+    qX = torch.from_numpy(qX)
+    qY = torch.from_numpy(qY)
+    qL = torch.from_numpy(qL)
+    
+    rX = torch.from_numpy(rX)
+    rY = torch.from_numpy(rY)
+    rL = torch.from_numpy(rL)
+    
+    MAPi2t = fx_calc_map_multilabel_k(rY, rL, qX, qL, None)
+    MAPt2i = fx_calc_map_multilabel_k(rX, rL, qY, qL, None)
+    
     return MAPi2t, MAPt2i
+
 
 def main():
     if args.data_name == 'nus_wide_deep':
@@ -376,13 +471,13 @@ def main():
                 # # joint_evidence = evidencei2t + evidencet2i
                 # # loss_joint = edl_log_loss(joint_evidence, target, epoch, 2, 42)
                 
-                # # FUME 模糊损失 (基于隶属度) ---
-                # img_cred = get_train_category_credibility(img_membership, label)
-                # txt_cred = get_train_category_credibility(txt_membership, label)
+                # FUME 模糊损失 (基于隶属度) ---
+                img_cred = get_train_category_credibility(img_membership, label)
+                txt_cred = get_train_category_credibility(txt_membership, label)
     
                 # # 修正后的 RMSE 计算（逐样本）
-                # loss_fml_image = ((img_cred - label)**2).sum(dim=1).sqrt()
-                # loss_fml_txt = ((txt_cred - label)**2).sum(dim=1).sqrt()
+                loss_fml_image = ((img_cred - label)**2).sum(dim=1).sqrt()
+                loss_fml_txt = ((txt_cred - label)**2).sum(dim=1).sqrt()
 
 
                 # # 应用贝叶斯加权（需要逐样本输入），返回标量
@@ -391,7 +486,7 @@ def main():
 
                 # loss_aleatoric = loss_bayes_img + loss_bayes_txt
                 # # 非加权版本使用样本均值作为标量
-                # loss_excess = (loss_fml_image + loss_fml_txt).mean()
+                loss_excess = (loss_fml_image + loss_fml_txt).mean()
                 # loss_aleatoric_scaled = loss_aleatoric * 0.1
                 
                 # kl_loss_img = vib_kl_loss(mu_img, logvar_img)
@@ -432,6 +527,7 @@ def main():
                 # loss = args.alpha * loss_dech + args.delta * loss_q + args.beta * loss_fml_mix + args.gamma * loss_cl + args.eta * loss_vib
 
 
+                # loss = args.alpha * loss_dech + args.delta * loss_q + args.beta * loss_excess
                 loss = args.alpha * loss_dech + args.delta * loss_q
                 
                             
@@ -453,7 +549,8 @@ def main():
 
         # test(query_loader,retrieval_loader,image_model,text_model,evidence_model,epoch)
         print(f'\nEvaluating after Epoch {epoch + 1} ...')
-        MAPi2t, MAPt2i = test(query_loader, retrieval_loader, image_model, text_model, evidence_model, epoch)
+        # MAPi2t, MAPt2i = test(query_loader, retrieval_loader, image_model, text_model, evidence_model, epoch)
+        MAPi2t, MAPt2i = test(query_loader, retrieval_loader, image_model, text_model, evidence_model, gcn_img, gcn_txt, epoch)
 
         if MAPi2t > best_i2t_map:
             best_i2t_map = MAPi2t
@@ -513,12 +610,32 @@ def eval_res():
     image_model = ImageNet(image_dim,args.bit,num_classes).cuda().eval()
 
     text_model = TextNet(text_dim,args.bit,num_classes).cuda().eval()
+    # 新增
+    gcn_img = UncertaintyPrunedGCN(in_features=args.bit, hidden_features=args.bit).cuda().eval()
+    gcn_txt = UncertaintyPrunedGCN(in_features=args.bit, hidden_features=args.bit).cuda().eval()
+
     status_dict = torch.load(model_save_path, weights_only=True)
     image_model.load_state_dict(status_dict['image_model_state_dict'])
     text_model.load_state_dict(status_dict['text_model_state_dict'])
     evidence_model.load_state_dict(status_dict['evidence_model_state_dict'])
-    qX,qY,qL = generate_hash_code(query_loader,image_model,text_model)
-    rX,rY,rL = generate_hash_code(retrieval_loader,image_model,text_model)
+    # 新增
+    gcn_img.load_state_dict(status_dict['gcn_img_state_dict'])
+    gcn_txt.load_state_dict(status_dict['gcn_txt_state_dict'])
+
+    # qX,qY,qL = generate_hash_code(query_loader,image_model,text_model)
+    # rX,rY,rL = generate_hash_code(retrieval_loader,image_model,text_model)
+    qX, qY, qL = generate_hash_code(query_loader, image_model, text_model, evidence_model, gcn_img, gcn_txt)
+    rX, rY, rL = generate_hash_code(retrieval_loader, image_model, text_model, evidence_model, gcn_img, gcn_txt)
+
+    # 修复
+    qX = torch.from_numpy(qX)
+    qY = torch.from_numpy(qY)
+    qL = torch.from_numpy(qL)
+    
+    rX = torch.from_numpy(rX)
+    rY = torch.from_numpy(rY)
+    rL = torch.from_numpy(rL)
+
     epoch=status_dict['epoch']
     
     MAPi2t =fx_calc_map_multilabel_k(rY,rL,qX,qL,2000)

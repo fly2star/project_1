@@ -36,7 +36,15 @@ class UncertaintyPrunedGCN(nn.Module):
         
         # 只有两个节点都可靠时，边权重才高
         # mask[i, j] = rel[i] * rel[j]
-        pruning_mask = torch.mm(reliability, reliability.t()) 
+        pruning_mask = torch.mm(reliability, reliability.t())
+
+        # debug
+        if adj.shape != pruning_mask.shape:
+            print(f"!!! SHAPE MISMATCH ERROR !!!")
+            print(f"x shape: {x.shape}")
+            print(f"u shape: {u.shape}")
+            print(f"adj shape: {adj.shape}")
+            print(f"pruning_mask shape: {pruning_mask.shape}")
         
         # 4. 最终邻接矩阵
         # 加上单位矩阵 I (Self-loop)，保留自身信息
