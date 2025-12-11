@@ -326,16 +326,16 @@ def main():
                 # 修正后的 RMSE 计算（逐样本）
                 loss_fml_image = ((img_cred - label)**2).sum(dim=1).sqrt()
                 loss_fml_txt = ((txt_cred - label)**2).sum(dim=1).sqrt()
-                loss_fml_elementwise = loss_fml_image + loss_fml_txt  # shape: [bs]
 
 
                 # 应用贝叶斯加权（需要逐样本输入），返回标量
-                loss_fml_bayes = bayesian_uncertainty_loss(loss_fml_elementwise, uncertaint_joint, lambda_reg=0.5)
-                loss_aleatoric = loss_fml_bayes * 0.2
+                loss_bayes_img = bayesian_uncertainty_loss(loss_fml_image, u_i2t_diag, lambda_reg=0.5) 
+                loss_bayes_txt = bayesian_uncertainty_loss(loss_fml_txt, u_t2i_diag, lambda_reg=0.5) 
 
+                loss_aleatoric = loss_bayes_img + loss_bayes_txt
                 # 非加权版本使用样本均值作为标量
-                loss_fml = loss_fml_elementwise.mean()
-                loss_excess = loss_fml
+                loss_excess = (loss_fml_image + loss_fml_txt).mean()
+                loss_aleatoric_scaled = loss_aleatoric * 0.1
                 
                 kl_loss_img = vib_kl_loss(mu_img, logvar_img)
                 kl_loss_txt = vib_kl_loss(mu_txt, logvar_txt)
@@ -369,13 +369,12 @@ def main():
                 else:
                     t = 1.0
 
+                loss_fml_mix = loss_excess + (t * loss_aleatoric_scaled)
 
-                loss_fml_mix = loss_excess + (t * loss_aleatoric)
 
                 loss = args.alpha * loss_dech + args.delta * loss_q + args.beta * loss_fml_mix + args.gamma * loss_cl + args.eta * loss_vib
                 
-                
-                
+                            
                 # 使用单个优化器
                 optimizer.zero_grad()
                 loss.backward()
