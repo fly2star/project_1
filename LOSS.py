@@ -329,6 +329,29 @@ def bayesian_uncertainty_loss(loss_elementwise, uncertainty, lambda_reg=0.5):
     
     return total_loss.mean()
 
+def confidence_weighted_loss(loss_elementwise, uncertainty):
+    """
+    数值稳定的置信度加权损失 (基于 Excess Risk 理论)。
+    
+    :param loss_elementwise: 每个样本的 FUME RMSE 损失, shape [bs]
+    :param uncertainty: DECH 计算出的认知不确定性 u, shape [bs]
+    """
+    # 1. 梯度截断：不让 FUME 损失去反向修改 DECH 的不确定性输出
+    u = uncertainty.detach()
+    
+    # 2. 计算权重：不确定性越高(u大)，说明模型无知(Excess Risk高)，应降低权重
+    # 策略：简单的线性衰减或指数衰减
+    # w = 1.0 - u  # 线性 (推荐，最符合 Brier Score 理论)
+    w = torch.exp(-1.0 * u) # 指数 (对不确定性惩罚更重)
+    
+    # 3. 保护性截断，防止负权重 (虽然 u 理论上 <=1)
+    w = torch.clamp(w, min=0.0)
+    
+    # 4. 加权求平均
+    return (loss_elementwise * w).mean()
+
+
+
 def vib_kl_loss(mu, logvar):
     """
     计算 VIB 的 KL 散度损失。

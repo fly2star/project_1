@@ -328,8 +328,11 @@ def main():
                 loss_fml_txt = ((txt_cred - label)**2).sum(dim=1).sqrt()
                 loss_fml_elementwise = loss_fml_image + loss_fml_txt  # shape: [bs]
 
+                # ===1211新增加===
+                loss_fml_weighted = confidence_weighted_loss(loss_fml_elementwise, uncertaint_joint)
+
                 # 应用贝叶斯加权（需要逐样本输入），返回标量
-                loss_fml_bayes = bayesian_uncertainty_loss(loss_fml_elementwise, uncertaint_joint, lambda_reg=0.5)
+                # loss_fml_bayes = bayesian_uncertainty_loss(loss_fml_elementwise, uncertaint_joint, lambda_reg=0.5)
 
                 # 非加权版本使用样本均值作为标量
                 loss_fml = loss_fml_elementwise.mean()
@@ -355,16 +358,28 @@ def main():
                     loss_cl = 0.0
                 
             
-                # 不同的epoch阶段，采用不同的loss权重参数
-                # warm_up 控制从 0 -> 1 的平滑过渡
-                # 自适应 warm-up：取总 epoch 的 5%，并限制在 [1,20] 之间
-                warm_up = max(1, int(0.05 * args.max_epochs))
-                warm_up = min(warm_up, 20)
-                # 平滑混合 loss（推荐），混合 loss：t 越大越偏向 bayes 版本
-                t = min(1.0, float(epoch) / float(warm_up))
-                loss_fml_mix = (1.0 - t) * loss_fml + t * loss_fml_bayes
+                
+                # if args.max_epochs <= 20:
+                #     warm_up = 5
+                # else:
+                #     warm_up = int(0.1 * args.max_epochs)
+                
+                # if epoch < warm_up:
+                #     t = float(epoch) / float(warm_up)
+                # else:
+                #     t = 1.0
+
+                # bayes_scale = 0.1
+                # # 新公式：Loss = (1 - 0.5*t) * loss_fml + (0.5*t) * (loss_fml_bayes * bayes_scale)
+
+                # loss_fml_mix = (1.0 - t) * loss_fml + t * (loss_fml_bayes * bayes_scale)
+
+                # debug 输出
+                # if batch_idx % 100 == 0:
+                #     print(f"Epoch {epoch} | t: {t:.2f} | FML: {loss_fml.item():.4f} | Bayes(Scaled): {(loss_fml_bayes * bayes_scale).item():.4f}")
+
                 # loss = args.alpha * loss_dech + args.delta * loss_joint + args.beta * loss_fml_mix + args.gamma * loss_cl + args.eta * loss_vib
-                loss = args.alpha * loss_dech + args.delta * loss_q + args.beta * loss_fml_mix + args.gamma * loss_cl + args.eta * loss_vib
+                loss = args.alpha * loss_dech + args.delta * loss_q + args.beta * loss_fml_weighted + args.gamma * loss_cl + args.eta * loss_vib
                 
                 
                 
