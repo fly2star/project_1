@@ -328,14 +328,14 @@ def main():
                 loss_fml_txt = ((txt_cred - label)**2).sum(dim=1).sqrt()
                 loss_fml_elementwise = loss_fml_image + loss_fml_txt  # shape: [bs]
 
-                # ===1211新增加===
-                loss_fml_weighted = confidence_weighted_loss(loss_fml_elementwise, uncertaint_joint)
 
                 # 应用贝叶斯加权（需要逐样本输入），返回标量
-                # loss_fml_bayes = bayesian_uncertainty_loss(loss_fml_elementwise, uncertaint_joint, lambda_reg=0.5)
+                loss_fml_bayes = bayesian_uncertainty_loss(loss_fml_elementwise, uncertaint_joint, lambda_reg=0.5)
+                loss_aleatoric = loss_fml_bayes * 0.2
 
                 # 非加权版本使用样本均值作为标量
                 loss_fml = loss_fml_elementwise.mean()
+                loss_excess = loss_fml
                 
                 kl_loss_img = vib_kl_loss(mu_img, logvar_img)
                 kl_loss_txt = vib_kl_loss(mu_txt, logvar_txt)
@@ -359,27 +359,20 @@ def main():
                 
             
                 
-                # if args.max_epochs <= 20:
-                #     warm_up = 5
-                # else:
-                #     warm_up = int(0.1 * args.max_epochs)
+                if args.max_epochs <= 20:
+                    warm_up = 5
+                else:
+                    warm_up = int(0.1 * args.max_epochs)
                 
-                # if epoch < warm_up:
-                #     t = float(epoch) / float(warm_up)
-                # else:
-                #     t = 1.0
+                if epoch < warm_up:
+                    t = float(epoch) / float(warm_up)
+                else:
+                    t = 1.0
 
-                # bayes_scale = 0.1
-                # # 新公式：Loss = (1 - 0.5*t) * loss_fml + (0.5*t) * (loss_fml_bayes * bayes_scale)
 
-                # loss_fml_mix = (1.0 - t) * loss_fml + t * (loss_fml_bayes * bayes_scale)
+                loss_fml_mix = loss_excess + (t * loss_aleatoric)
 
-                # debug 输出
-                # if batch_idx % 100 == 0:
-                #     print(f"Epoch {epoch} | t: {t:.2f} | FML: {loss_fml.item():.4f} | Bayes(Scaled): {(loss_fml_bayes * bayes_scale).item():.4f}")
-
-                # loss = args.alpha * loss_dech + args.delta * loss_joint + args.beta * loss_fml_mix + args.gamma * loss_cl + args.eta * loss_vib
-                loss = args.alpha * loss_dech + args.delta * loss_q + args.beta * loss_fml_weighted + args.gamma * loss_cl + args.eta * loss_vib
+                loss = args.alpha * loss_dech + args.delta * loss_q + args.beta * loss_fml_mix + args.gamma * loss_cl + args.eta * loss_vib
                 
                 
                 

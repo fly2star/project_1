@@ -23,7 +23,7 @@ parser.add_argument("--output_dim",type=int,default=128)
 parser.add_argument("--alpha",type=float,default=0.9,help="weight of origial dech loss")                    # 0.9
 parser.add_argument("--beta",type=float,default=0.9,help="weight of fuzzy multimodal loss")                 # 0.9
 parser.add_argument("--gamma",type=float,default=0.1,help="weight of consistency learning loss")            # 0.1
-parser.add_argument('--delta', type=float, default=0.5,help="Weight for the joint evidence fusion loss")    # 0.5
+parser.add_argument('--delta', type=float, default=0.1,help="Weight for the quanzation loss")               # 0.1
 parser.add_argument('--eta', type=float, default=0.5,help="Weight for the vib loss")                        # 0.5
 
 parser.add_argument('--use_relu', type=bool, default=True, 
