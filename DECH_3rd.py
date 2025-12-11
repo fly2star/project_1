@@ -272,6 +272,9 @@ def main():
                 img_hash_code = image_outputs_dict["hash_code"]
                 txt_hash_code = text_outputs_dict["hash_code"]
                 
+                # 1210新增: 量化损失
+                loss_q = calculate_quantization_loss(img_hash_code, txt_hash_code)
+                
                 # --- 新增：提取 mu 和 logvar 并计算 KL 损失 --- 1205
                 mu_img, logvar_img = image_outputs_dict["mu"], image_outputs_dict["logvar"]
                 mu_txt, logvar_txt = text_outputs_dict["mu"], text_outputs_dict["logvar"]
@@ -312,9 +315,9 @@ def main():
                 lossT2i = edl_log_loss(evidencet2i, target, epoch, 2, 42)
                 loss_dech = lossI2t + lossT2i
                 
-                # 证据联合损失
-                joint_evidence = evidencei2t + evidencet2i
-                loss_joint = edl_log_loss(joint_evidence, target, epoch, 2, 42)
+                # 证据联合损失，与dech损失重复
+                # joint_evidence = evidencei2t + evidencet2i
+                # loss_joint = edl_log_loss(joint_evidence, target, epoch, 2, 42)
                 
                 # FUME 模糊损失 (基于隶属度) ---
                 img_cred = get_train_category_credibility(img_membership, label)
@@ -361,7 +364,7 @@ def main():
                 t = min(1.0, float(epoch) / float(warm_up))
                 loss_fml_mix = (1.0 - t) * loss_fml + t * loss_fml_bayes
                 # loss = args.alpha * loss_dech + args.delta * loss_joint + args.beta * loss_fml_mix + args.gamma * loss_cl + args.eta * loss_vib
-                loss = args.alpha * loss_dech + args.delta * loss_joint + args.beta * loss_fml + args.gamma * loss_cl + args.eta * loss_vib
+                loss = args.alpha * loss_dech + args.delta * loss_q + args.beta * loss_fml + args.gamma * loss_cl + args.eta * loss_vib
                 
                 
                 
@@ -470,4 +473,3 @@ if __name__ == '__main__':
         eval_res()
     else:
         main()
-        

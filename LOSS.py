@@ -132,13 +132,77 @@ def calculate_similarity_preserving_loss(image_hash_codes, text_hash_codes, s_ma
 
     return total_similarity_loss
 
+# 新的量化损失函数
+def calculate_quantization_loss(image_hash_codes, text_hash_codes, device=None):
+    """
+    计算量化损失 (Quantization Loss)。
+    目标：最小化连续哈希码与二值哈希码之间的距离。
+    公式: L_q = || H - sign(H) ||^2
+    """
+    # 1. 生成目标二值码 B
+    # sign() 函数不可导，所以必须使用 .detach() 将其从计算图中剥离
+    # 我们把 B 当作一个固定的“锚点”，让 H 去拟合它
+    B_img = torch.sign(image_hash_codes).detach()
+    B_txt = torch.sign(text_hash_codes).detach()
+
+    # 2. 计算均方误差 (MSE)
+    # 这会迫使 H_img 和 H_txt 的值向 -1 或 1 靠拢
+    loss_q_img = F.mse_loss(image_hash_codes, B_img)
+    loss_q_txt = F.mse_loss(text_hash_codes, B_txt)
+
+    # 3. 返回总量化损失
+    return loss_q_img + loss_q_txt
 
 # file: LOSS.py
 # ... (保留 calculate_similarity_preserving_loss 等函数) ...
 
-def consistency_learning_loss(view1_feature, view2_feature, tau=1.0, device=None):
+# def consistency_learning_loss(view1_feature, view2_feature, tau=1.0, device=None):
+#     """
+#     移植自 FUME 的 consistency_Learning, 用于自监督的对比学习。
+#     """
+#     if not device:
+#         device = get_device()
+    
+#     view1_feature = view1_feature.to(device)
+#     view2_feature = view2_feature.to(device)
+
+#     # --- FUME 原始代码 ---
+#     n_view = 2
+#     batch_size = view1_feature.shape[0]
+#     all_fea = torch.cat([view1_feature, view2_feature])
+#     sim = all_fea.mm(all_fea.t())
+
+#     sim = (sim / tau).exp()
+#     sim = sim - sim.diag().diag() # 移除对角线上的自身相似度
+    
+#     # 构造正样本对的 mask
+#     pos_mask = torch.zeros_like(sim)
+#     pos_mask[torch.arange(batch_size), torch.arange(batch_size) + batch_size] = 1
+#     pos_mask[torch.arange(batch_size) + batch_size, torch.arange(batch_size)] = 1
+    
+#     # 计算损失 (InfoNCE 的一种变体)
+#     # 对于每个样本，其损失是 正样本相似度 / (所有样本相似度之和) 的负对数
+#     positive_pairs_sim = sim[pos_mask.bool()].view(batch_size * 2, 1)
+#     denominator = sim.sum(dim=1, keepdim=True)
+    
+#     loss = -torch.log(positive_pairs_sim / denominator).mean()
+    
+#     # FUME 的原始实现稍有不同，但目标一致。为了简化和鲁棒性，我们使用更标准的 InfoNCE 形式。
+#     # 如果您想完全复现，可以保留 FUME 的 loss1+loss2 计算方式。
+#     # 这里我们暂时使用 FUME 的原始版本：
+#     sim_sum1 = sim[:, :batch_size] + sim[:, batch_size:]
+#     diag1 = torch.cat([sim_sum1[:batch_size].diag(), sim_sum1[batch_size:].diag()])
+#     loss1 = -(diag1 / sim.sum(1)).log().mean()
+
+#     sim_sum2 = sim[:batch_size] + sim[batch_size:]
+#     diag2 = torch.cat([sim_sum2[:, :batch_size].diag(), sim_sum2[:, batch_size:].diag()])
+#     loss2 = -(diag2 / sim.sum(1)).log().mean()
+#     return loss1 + loss2
+
+# ===1210===
+def consistency_learning_loss(view1_feature, view2_feature, weights=None, tau=1.0, device=None):
     """
-    移植自 FUME 的 consistency_Learning, 用于自监督的对比学习。
+    移植自 FUME 的 consistency_Learning (支持不确定性加权)。
     """
     if not device:
         device = get_device()
@@ -146,7 +210,7 @@ def consistency_learning_loss(view1_feature, view2_feature, tau=1.0, device=None
     view1_feature = view1_feature.to(device)
     view2_feature = view2_feature.to(device)
 
-    # --- FUME 原始代码 ---
+    # --- FUME 原始代码逻辑开始 ---
     n_view = 2
     batch_size = view1_feature.shape[0]
     all_fea = torch.cat([view1_feature, view2_feature])
@@ -155,28 +219,44 @@ def consistency_learning_loss(view1_feature, view2_feature, tau=1.0, device=None
     sim = (sim / tau).exp()
     sim = sim - sim.diag().diag() # 移除对角线上的自身相似度
     
-    # 构造正样本对的 mask
-    pos_mask = torch.zeros_like(sim)
-    pos_mask[torch.arange(batch_size), torch.arange(batch_size) + batch_size] = 1
-    pos_mask[torch.arange(batch_size) + batch_size, torch.arange(batch_size)] = 1
+    # --- 准备权重 (新增) ---
+    if weights is not None:
+        # weights 形状是 [bs]，我们需要将其扩展为 [2*bs] 以匹配 all_fea
+        # 这样前 bs 个权重对应 view1，后 bs 个权重对应 view2
+        weights_expanded = torch.cat([weights, weights]).to(device)
     
-    # 计算损失 (InfoNCE 的一种变体)
-    # 对于每个样本，其损失是 正样本相似度 / (所有样本相似度之和) 的负对数
-    positive_pairs_sim = sim[pos_mask.bool()].view(batch_size * 2, 1)
-    denominator = sim.sum(dim=1, keepdim=True)
-    
-    loss = -torch.log(positive_pairs_sim / denominator).mean()
-    
-    # FUME 的原始实现稍有不同，但目标一致。为了简化和鲁棒性，我们使用更标准的 InfoNCE 形式。
-    # 如果您想完全复现，可以保留 FUME 的 loss1+loss2 计算方式。
-    # 这里我们暂时使用 FUME 的原始版本：
+    # --- 计算 Loss 1 ---
+    # FUME 原逻辑: sim_sum1 = sum([sim[:, v * batch_size: (v + 1) * batch_size] for v in range(n_view)])
+    # 展开写更清晰:
     sim_sum1 = sim[:, :batch_size] + sim[:, batch_size:]
+    
+    # diag1 形状: [2*bs]
     diag1 = torch.cat([sim_sum1[:batch_size].diag(), sim_sum1[batch_size:].diag()])
-    loss1 = -(diag1 / sim.sum(1)).log().mean()
+    
+    # 计算逐样本损失 (不取 mean)
+    loss1_elementwise = -(diag1 / sim.sum(1)).log()
+    
+    # 加权并求平均
+    if weights is not None:
+        loss1 = (loss1_elementwise * weights_expanded).mean()
+    else:
+        loss1 = loss1_elementwise.mean()
 
+    # --- 计算 Loss 2 ---
+    # FUME 原逻辑: sim_sum2 = sum([sim[v * batch_size: (v + 1) * batch_size] for v in range(n_view)])
     sim_sum2 = sim[:batch_size] + sim[batch_size:]
+    
+    # diag2 形状: [2*bs]
     diag2 = torch.cat([sim_sum2[:, :batch_size].diag(), sim_sum2[:, batch_size:].diag()])
-    loss2 = -(diag2 / sim.sum(1)).log().mean()
+    
+    # 计算逐样本损失
+    loss2_elementwise = -(diag2 / sim.sum(1)).log()
+    
+    # 加权并求平均
+    if weights is not None:
+        loss2 = (loss2_elementwise * weights_expanded).mean()
+    else:
+        loss2 = loss2_elementwise.mean()
     
     return loss1 + loss2
 
