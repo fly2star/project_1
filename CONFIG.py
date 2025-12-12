@@ -25,6 +25,7 @@ parser.add_argument("--beta",type=float,default=0.9,help="weight of fuzzy multim
 parser.add_argument("--gamma",type=float,default=0.1,help="weight of consistency learning loss")            # 0.1
 parser.add_argument('--delta', type=float, default=0.1,help="Weight for the quanzation loss")               # 0.1
 parser.add_argument('--eta', type=float, default=0.5,help="Weight for the vib loss")                        # 0.5
+parser.add_argument('--theta', type=float, default=0.5, help='protottype loss')
 
 parser.add_argument('--use_relu', type=bool, default=True, 
                     help='Whether to use ReLU to calculate membership degree in FuzzyLogicModule.')

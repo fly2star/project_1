@@ -316,10 +316,13 @@ def main():
     gcn_img = UncertaintyPrunedGCN(in_features=args.bit, hidden_features=args.bit).cuda()
     gcn_txt = UncertaintyPrunedGCN(in_features=args.bit, hidden_features=args.bit).cuda()
 
+    proto_model = GaussianPrototype(args.bit, num_classes).cuda()
+
     # 聚合全部参数并去重（因为 shared_W 在 image_model 和 text_model 中是同一对象）
     all_params = list(image_model.parameters()) + list(text_model.parameters()) + \
                     list(evidence_model.parameters()) + \
-                    list(gcn_img.parameters()) + list(gcn_txt.parameters())
+                    list(gcn_img.parameters()) + list(gcn_txt.parameters()) + \
+                    list(proto_model.parameters())
     unique_params = list({id(p): p for p in all_params}.values())
 
     # 使用单个优化器管理所有参数，避免对同一参数进行多次更新
@@ -341,6 +344,7 @@ def main():
         # fuzzy_module.load_state_dict(status_dict['fuzzy_module_state_dict'])
         gcn_img.load_state_dict(status_dict['gcn_img_state_dict'])
         gcn_txt.load_state_dict(status_dict['gcn_txt_state_dict'])
+        proto_model.load_state_dict(status_dict['proto_model_state_dict'])
 
     # print(f'start train')
     best_i2t_map = 0.0
@@ -370,6 +374,8 @@ def main():
                 # 提取哈希码
                 img_hash_raw = image_outputs_dict["hash_code"]
                 txt_hash_raw = text_outputs_dict["hash_code"]
+
+                
                 
                 # # 1210新增: 量化损失
                 # loss_q = calculate_quantization_loss(img_hash_raw, txt_hash_raw)
@@ -405,6 +411,13 @@ def main():
                 u_t2i_diag = u_t2i_mat.diag() 
                 # 简化，将两个方向不确定性的平均值，作为着对样本总的不确定性
                 uncertaint_joint = (u_i2t_diag + u_t2i_diag) / 2
+
+                #==============1212
+                loss_proto_img = proto_model(mu_img, logvar_img, label, shared_W)
+                loss_proto_txt = proto_model(mu_txt, logvar_txt, label, shared_W)
+                
+                loss_proto = loss_proto_img + loss_proto_txt
+                #==============
 
                 # 为 GCN 准备不确定性输入 
                 u_img_in = u_i2t_diag.view(-1, 1).detach()
@@ -480,55 +493,55 @@ def main():
                 loss_fml_txt = ((txt_cred - label)**2).sum(dim=1).sqrt()
 
 
-                # # 应用贝叶斯加权（需要逐样本输入），返回标量
-                # loss_bayes_img = bayesian_uncertainty_loss(loss_fml_image, u_i2t_diag, lambda_reg=0.5) 
-                # loss_bayes_txt = bayesian_uncertainty_loss(loss_fml_txt, u_t2i_diag, lambda_reg=0.5) 
+                # 应用贝叶斯加权（需要逐样本输入），返回标量
+                loss_bayes_img = bayesian_uncertainty_loss(loss_fml_image, u_i2t_diag, lambda_reg=0.5) 
+                loss_bayes_txt = bayesian_uncertainty_loss(loss_fml_txt, u_t2i_diag, lambda_reg=0.5) 
 
-                # loss_aleatoric = loss_bayes_img + loss_bayes_txt
-                # # 非加权版本使用样本均值作为标量
+                loss_aleatoric = loss_bayes_img + loss_bayes_txt
+                # 非加权版本使用样本均值作为标量
                 loss_excess = (loss_fml_image + loss_fml_txt).mean()
-                # loss_aleatoric_scaled = loss_aleatoric * 0.1
+                loss_aleatoric_scaled = loss_aleatoric * 0.1
                 
-                # kl_loss_img = vib_kl_loss(mu_img, logvar_img)
-                # kl_loss_txt = vib_kl_loss(mu_txt, logvar_txt)
-                # loss_vib = (kl_loss_img + kl_loss_txt) / 2
+                kl_loss_img = vib_kl_loss(mu_img, logvar_img)
+                kl_loss_txt = vib_kl_loss(mu_txt, logvar_txt)
+                loss_vib = (kl_loss_img + kl_loss_txt) / 2
                 
-                #  # 对比损失 (可选) ---
-                # if args.use_cl:
-                #     # 1. 计算权重：不确定性越大，权重越小
-                #     # 策略 A: 指数衰减 (推荐)
-                #     cl_weights = torch.exp(-1.0 * uncertaint_joint)
-                #     # 策略 B: 反比
-                #     # cl_weights = 1.0 / (1.0 + uncertainty_joint)
+                 # 对比损失 (可选) ---
+                if args.use_cl:
+                    # 1. 计算权重：不确定性越大，权重越小
+                    # 策略 A: 指数衰减 (推荐)
+                    cl_weights = torch.exp(-1.0 * uncertaint_joint)
+                    # 策略 B: 反比
+                    # cl_weights = 1.0 / (1.0 + uncertainty_joint)
                     
-                #     # (可选) 归一化权重，保持总损失量级稳定
-                #     # cl_weights = cl_weights / cl_weights.mean()
+                    # (可选) 归一化权重，保持总损失量级稳定
+                    # cl_weights = cl_weights / cl_weights.mean()
                     
-                #     # 2. 调用修改后的函数
-                #     loss_cl = consistency_learning_loss(img_hash_raw, txt_hash_raw, weights=cl_weights)
-                # else:
-                #     loss_cl = 0.0
+                    # 2. 调用修改后的函数
+                    loss_cl = consistency_learning_loss(img_hash_raw, txt_hash_raw, weights=cl_weights)
+                else:
+                    loss_cl = 0.0
                 
             
                 
-                # if args.max_epochs <= 20:
-                #     warm_up = 5
-                # else:
-                #     warm_up = int(0.1 * args.max_epochs)
+                if args.max_epochs <= 20:
+                    warm_up = 5
+                else:
+                    warm_up = int(0.1 * args.max_epochs)
                 
-                # if epoch < warm_up:
-                #     t = float(epoch) / float(warm_up)
-                # else:
-                #     t = 1.0
+                if epoch < warm_up:
+                    t = float(epoch) / float(warm_up)
+                else:
+                    t = 1.0
 
-                # loss_fml_mix = loss_excess + (t * loss_aleatoric_scaled)
+                loss_fml_mix = loss_excess + (t * loss_aleatoric_scaled)
 
 
-                # loss = args.alpha * loss_dech + args.delta * loss_q + args.beta * loss_fml_mix + args.gamma * loss_cl + args.eta * loss_vib
+                # loss = args.alpha * loss_dech + args.delta * loss_q + args.beta * loss_fml_mix + args.gamma * loss_cl + args.eta * loss_vib + args.theta * loss_proto
 
 
                 # loss = args.alpha * loss_dech + args.delta * loss_q + args.beta * loss_excess
-                loss = args.alpha * loss_dech + args.delta * loss_q
+                loss = args.alpha * loss_dech + args.beta * loss_excess + args.gamma * loss_cl
                 
                             
                 # 使用单个优化器
@@ -578,6 +591,7 @@ def main():
             # 'fuzzy_module_state_dict': fuzzy_module.state_dict(),
             'gcn_img_state_dict': gcn_img.state_dict(),
             'gcn_txt_state_dict': gcn_txt.state_dict(),
+            'proto_model_state_dict': proto_model.state_dict(),
         }
         if epoch + 1 == args.max_epochs:
             torch.save(state, save_path)
@@ -613,6 +627,7 @@ def eval_res():
     # 新增
     gcn_img = UncertaintyPrunedGCN(in_features=args.bit, hidden_features=args.bit).cuda().eval()
     gcn_txt = UncertaintyPrunedGCN(in_features=args.bit, hidden_features=args.bit).cuda().eval()
+    proto_model = GaussianPrototype(args.bit, num_classes).cuda().eval()
 
     status_dict = torch.load(model_save_path, weights_only=True)
     image_model.load_state_dict(status_dict['image_model_state_dict'])
