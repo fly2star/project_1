@@ -326,7 +326,8 @@ def main():
     unique_params = list({id(p): p for p in all_params}.values())
 
     # 使用单个优化器管理所有参数，避免对同一参数进行多次更新
-    optimizer = torch.optim.Adam(unique_params, 1e-4)
+    # 1e-4 ------>1e-5
+    optimizer = torch.optim.Adam(unique_params, 1e-5)
 
     # fuzzy_module = FuzzyLogicModule(feature_dim=args.bit, num_classes=num_classes, device=args.gpuIdx, use_relu=args.use_relu).cuda()
     # parameters = list(image_model.parameters()) + list(text_model.parameters())  + list(evidence_model.parameters()) + list(fuzzy_module.parameters())
@@ -540,8 +541,9 @@ def main():
                 # loss = args.alpha * loss_dech + args.delta * loss_q + args.beta * loss_fml_mix + args.gamma * loss_cl + args.eta * loss_vib + args.theta * loss_proto
 
 
-                # loss = args.alpha * loss_dech + args.delta * loss_q + args.beta * loss_excess
-                loss = args.alpha * loss_dech + args.beta * loss_excess + args.gamma * loss_cl
+                loss = args.alpha * loss_dech + args.beta * loss_excess
+                # loss = args.alpha * loss_dech + args.delta * loss_q
+                # loss = args.alpha * loss_dech + args.beta * loss_excess + args.gamma * loss_cl
                 
                             
                 # 使用单个优化器
