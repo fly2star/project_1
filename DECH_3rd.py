@@ -4,6 +4,7 @@ import torch.nn as nn
 from tqdm import tqdm
 from models import *
 from LOSS import *
+from utils import *
 import CONFIG
 import os
 
@@ -318,7 +319,7 @@ def main():
 
     proto_model = GaussianPrototype(args.bit, num_classes).cuda()
     #---1215
-    fusion_model = UncertaintyFusion(args.bit).cuda
+    fusion_model = UncertaintyFusion(args.bit).cuda()
 
     # 聚合全部参数并去重（因为 shared_W 在 image_model 和 text_model 中是同一对象）
     all_params = list(image_model.parameters()) + list(text_model.parameters()) + \
@@ -349,6 +350,7 @@ def main():
         gcn_img.load_state_dict(status_dict['gcn_img_state_dict'])
         gcn_txt.load_state_dict(status_dict['gcn_txt_state_dict'])
         proto_model.load_state_dict(status_dict['proto_model_state_dict'])
+        fusion_model.load_state_dict(status_dict['fusion_model_state_dict'])
 
     # print(f'start train')
     best_i2t_map = 0.0
@@ -403,28 +405,11 @@ def main():
                 # DECH 原始损失 (基于哈希码) ---
                 evidencei2t = evidence_model(img_hash_fused, txt_hash_fused, 'i2t')
                 evidencet2i = evidence_model(img_hash_fused, txt_hash_fused, 't2i')
+
+                u_i2t_diag = compute_uncertainty_diag(evidence=evidencei2t)
+                u_t2i_diag = compute_uncertainty_diag(evidence=evidencet2i)
                 
-                # 计算不确定性 u
-                # u = K / S, 这里K = 2(相似/不相似), S = sum(alpha) = sum(evidence + 1)
-                num_classes_evidence = 2
-                # alpha = e + 1
-                alpha_i2t = evidencei2t + 1
-                alpha_t2i = evidencet2i + 1
-                # S = sum(alpha)
-                S_i2t = torch.sum(alpha_i2t, dim=1, keepdim=True)
-                S_t2i = torch.sum(alpha_t2i, dim=1, keepdim=True)
-                # u = K / S
-                u_i2t = num_classes_evidence / S_i2t
-                u_t2i = num_classes_evidence / S_t2i
-                # 获取当前的 batch_size
-                bs = img_hash_raw.shape[0]
-                # 将 u 按照 bs 展开
-                u_i2t_mat = u_i2t.view(bs, bs)
-                u_t2i_mat = u_t2i.view(bs, bs)
-                # 提取对角线元素 (正样本对的不确定性)
-                # 结果形状变为 [bs]
-                u_i2t_diag = u_i2t_mat.diag()
-                u_t2i_diag = u_t2i_mat.diag() 
+
                 # 简化，将两个方向不确定性的平均值，作为着对样本总的不确定性
                 uncertaint_joint = (u_i2t_diag + u_t2i_diag) / 2
 
@@ -460,28 +445,8 @@ def main():
                 
                 # 重复流程
                 # ==================================================
-                # 计算不确定性 u
-                # u = K / S, 这里K = 2(相似/不相似), S = sum(alpha) = sum(evidence + 1)
-                num_classes_evidence = 2
-                # alpha = e + 1
-                alpha_i2t = evidencei2t + 1
-                alpha_t2i = evidencet2i + 1
-                # S = sum(alpha)
-                S_i2t = torch.sum(alpha_i2t, dim=1, keepdim=True)
-                S_t2i = torch.sum(alpha_t2i, dim=1, keepdim=True)
-                # u = K / S
-                u_i2t = num_classes_evidence / S_i2t
-                u_t2i = num_classes_evidence / S_t2i
-                # 获取当前的 batch_size
-                bs = img_hash_raw.shape[0]
-                # 将 u 按照 bs 展开
-                u_i2t_mat = u_i2t.view(bs, bs)
-                u_t2i_mat = u_t2i.view(bs, bs)
-                # 提取对角线元素 (正样本对的不确定性)
-                # 结果形状变为 [bs]
-                u_i2t_diag = u_i2t_mat.diag()
-                u_t2i_diag = u_t2i_mat.diag() 
-                # 简化，将两个方向不确定性的平均值，作为着对样本总的不确定性
+                u_i2t_diag = compute_uncertainty_diag(evidence=evidencei2t)
+                u_t2i_diag = compute_uncertainty_diag(evidence=evidencet2i)
                 uncertaint_joint = (u_i2t_diag + u_t2i_diag) / 2
                 # ==================================================
 
@@ -609,6 +574,7 @@ def main():
             'gcn_img_state_dict': gcn_img.state_dict(),
             'gcn_txt_state_dict': gcn_txt.state_dict(),
             'proto_model_state_dict': proto_model.state_dict(),
+            'fusion_model_state_dict': fusion_model.state_dict(),
         }
         if epoch + 1 == args.max_epochs:
             torch.save(state, save_path)
