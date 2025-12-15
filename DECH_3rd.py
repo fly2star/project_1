@@ -317,12 +317,15 @@ def main():
     gcn_txt = UncertaintyPrunedGCN(in_features=args.bit, hidden_features=args.bit).cuda()
 
     proto_model = GaussianPrototype(args.bit, num_classes).cuda()
+    #---1215
+    fusion_model = UncertaintyFusion(args.bit).cuda
 
     # 聚合全部参数并去重（因为 shared_W 在 image_model 和 text_model 中是同一对象）
     all_params = list(image_model.parameters()) + list(text_model.parameters()) + \
                     list(evidence_model.parameters()) + \
                     list(gcn_img.parameters()) + list(gcn_txt.parameters()) + \
-                    list(proto_model.parameters())
+                    list(proto_model.parameters()) + \
+                    list (fusion_model.parameters())
     unique_params = list({id(p): p for p in all_params}.values())
 
     # 使用单个优化器管理所有参数，避免对同一参数进行多次更新
@@ -384,6 +387,14 @@ def main():
                 # --- 新增：提取 mu 和 logvar 并计算 KL 损失 --- 1205
                 mu_img, logvar_img = image_outputs_dict["mu"], image_outputs_dict["logvar"]
                 mu_txt, logvar_txt = text_outputs_dict["mu"], text_outputs_dict["logvar"]
+
+                # ---为fusion准备新的变量---1215
+                var_img_proxy = logvar_img.exp().mean(dim=1, keepdim=True) # [Batch, 1]
+                var_txt_proxy = logvar_txt.exp().mean(dim=1, keepdim=True) # [Batch, 1]
+
+                # ---融合不确定性--- 1215
+                img_hash_fused = fusion_model(img_hash_raw, txt_hash_raw, var_img_proxy)
+                txt_hash_fused = fusion_model(txt_hash_raw, img_hash_raw, var_txt_proxy)
                 
                 # DECH 原始损失 (基于哈希码) ---
                 evidencei2t = evidence_model(img_hash_raw, txt_hash_raw, 'i2t')

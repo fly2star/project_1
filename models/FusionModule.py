@@ -1,25 +1,51 @@
-class SimpleFusionModule(nn.Module):
-    def __init__(self, feature_dim):
-        super(SimpleFusionModule, self).__init__()
-        # 使用一个简单的 MLP 来学习三个特征的融合
-        self.fusion_mlp = nn.Sequential(
-            nn.Linear(feature_dim * 3, feature_dim * 2),
-            nn.ReLU(),
-            nn.Linear(feature_dim * 2, feature_dim * 2) # 输出融合后的 img 和 txt 特征
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class UncertaintyFusion(nn.Module):
+    def __init__(self, bit, dropout=0.1):
+        super(UncertaintyFusion, self).__init__()
+        # 简单的多头注意力 (自注意力机制用于跨模态)
+        # 这里为了轻量化，我们只用单层 Attention
+        self.attn = nn.MultiheadAttention(embed_dim=bit, num_heads=4, dropout=dropout, batch_first=True)
+        self.norm = nn.LayerNorm(bit)
+        
+        # 融合门控 (Gate): 决定保留多少原始信息，接受多少跨模态信息
+        self.gate = nn.Sequential(
+            nn.Linear(bit * 2 + 1, bit), # 输入: [MyFeature, OtherFeature, Uncertainty]
+            nn.Sigmoid()
         )
-    
-    def forward(self, img_feat, txt_feat, prompt_feat):
-        # 1. 拼接所有输入特征
-        concatenated_features = torch.cat((img_feat, txt_feat, prompt_feat), dim=-1)
+
+    def forward(self, x_my, x_other, u_my):
+        """
+        x_my: 当前模态特征 (e.g., Image Hash Raw)
+        x_other: 另一模态特征 (e.g., Text Hash Raw)
+        u_my: 当前模态的不确定性 (利用 VIB 的 logvar 计算)
+        """
+        # 1. 跨模态注意力 (Cross Attention)
+        # Query = x_my, Key/Value = x_other
+        # "我想从对方那里查询与我相关的信息"
+        # x_my.unsqueeze(1) 变为 [Batch, 1, Bit] 以适配 Attention
+        query = x_my.unsqueeze(1)
+        key_value = x_other.unsqueeze(1)
         
-        # 2. 通过 MLP 进行深度融合
-        fused_output = self.fusion_mlp(concatenated_features)
+        # attn_output: [Batch, 1, Bit]
+        attn_output, _ = self.attn(query, key_value, key_value)
+        attn_output = attn_output.squeeze(1)
         
-        # 3. 分割成增强后的图像和文本特征
-        enhanced_img_feat, enhanced_txt_feat = torch.chunk(fused_output, 2, dim=-1)
+        # 2. 不确定性门控融合
+        # 如果我不确定 (u_my 大)，我应该多听听对方的 (attn_output)
+        # 如果我很确定 (u_my 小)，我应该坚持自己 (x_my)
         
-        # 4. 使用残差连接
-        final_img_feat = 0.5 * img_feat + 0.5 * enhanced_img_feat
-        final_txt_feat = 0.5 * txt_feat + 0.5 * enhanced_txt_feat
+        # 拼接特征用于计算门控权重
+        # u_my 需要是 [Batch, 1]
+        if u_my.dim() == 1:
+            u_my = u_my.view(-1, 1)
+            
+        gate_input = torch.cat([x_my, attn_output, u_my], dim=1)
+        alpha = self.gate(gate_input) # [Batch, Bit]
         
-        return final_img_feat, final_txt_feat
+        # 3. 残差连接 + 归一化
+        # Out = (1-alpha) * Self + alpha * Other
+        fused = (1 - alpha) * x_my + alpha * attn_output
+        return self.norm(fused)

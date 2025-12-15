@@ -5,3 +5,4 @@ from .LabelNet import LabelNetworkModule
 from .FuzzyLogicModule import FuzzyLogicModule
 from .UPGCN import UncertaintyPrunedGCN
 from .GaussianProto import GaussianPrototype
+from .FusionModule import UncertaintyFusion
