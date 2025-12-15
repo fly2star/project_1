@@ -380,7 +380,6 @@ def main():
                 txt_hash_raw = text_outputs_dict["hash_code"]
 
                 
-                
                 # # 1210新增: 量化损失
                 # loss_q = calculate_quantization_loss(img_hash_raw, txt_hash_raw)
                 
@@ -395,10 +394,15 @@ def main():
                 # ---融合不确定性--- 1215
                 img_hash_fused = fusion_model(img_hash_raw, txt_hash_raw, var_img_proxy)
                 txt_hash_fused = fusion_model(txt_hash_raw, img_hash_raw, var_txt_proxy)
+
+                '''
+                1215
+                接下来的流程使用 fused 后的特征
+                '''
                 
                 # DECH 原始损失 (基于哈希码) ---
-                evidencei2t = evidence_model(img_hash_raw, txt_hash_raw, 'i2t')
-                evidencet2i = evidence_model(img_hash_raw, txt_hash_raw, 't2i')
+                evidencei2t = evidence_model(img_hash_fused, txt_hash_fused, 'i2t')
+                evidencet2i = evidence_model(img_hash_fused, txt_hash_fused, 't2i')
                 
                 # 计算不确定性 u
                 # u = K / S, 这里K = 2(相似/不相似), S = sum(alpha) = sum(evidence + 1)
@@ -436,12 +440,12 @@ def main():
                 u_txt_in = u_t2i_diag.view(-1, 1).detach()
 
                 # GCN 增强
-                delta_img = gcn_img(img_hash_raw, u_img_in)
-                delta_txt = gcn_txt(txt_hash_raw, u_txt_in)
+                delta_img = gcn_img(img_hash_fused, u_img_in)
+                delta_txt = gcn_txt(txt_hash_fused, u_txt_in)
 
                 # 融合
-                img_hash_code = img_hash_raw + delta_img * gcn_img.alpha
-                txt_hash_code = txt_hash_raw + delta_txt * gcn_txt.alpha
+                img_hash_code = img_hash_fused + delta_img * gcn_img.alpha
+                txt_hash_code = txt_hash_fused + delta_txt * gcn_txt.alpha
 
                 # (可选) 再次 Tanh 约束范围
                 # 如果您的后续 Loss 对范围敏感，建议加上。如果用 MSE 则不强制。
