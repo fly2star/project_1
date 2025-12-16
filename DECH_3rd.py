@@ -330,8 +330,8 @@ def main():
     unique_params = list({id(p): p for p in all_params}.values())
 
     # 使用单个优化器管理所有参数，避免对同一参数进行多次更新
-    # 1e-4 ------>1e-5
-    optimizer = torch.optim.Adam(unique_params, 1e-5)
+    # 1e-4 ------>1e-5-------> 5e-4------>5e-5
+    optimizer = torch.optim.Adam(unique_params, 5e-5)
 
     # fuzzy_module = FuzzyLogicModule(feature_dim=args.bit, num_classes=num_classes, device=args.gpuIdx, use_relu=args.use_relu).cuda()
     # parameters = list(image_model.parameters()) + list(text_model.parameters())  + list(evidence_model.parameters()) + list(fuzzy_module.parameters())
@@ -390,12 +390,51 @@ def main():
                 mu_txt, logvar_txt = text_outputs_dict["mu"], text_outputs_dict["logvar"]
 
                 # ---为fusion准备新的变量---1215
-                var_img_proxy = logvar_img.exp().mean(dim=1, keepdim=True) # [Batch, 1]
-                var_txt_proxy = logvar_txt.exp().mean(dim=1, keepdim=True) # [Batch, 1]
+                # var_img_proxy = logvar_img.exp().mean(dim=1, keepdim=True) # [Batch, 1]
+                # var_txt_proxy = logvar_txt.exp().mean(dim=1, keepdim=True) # [Batch, 1]
 
                 # ---融合不确定性--- 1215
-                img_hash_fused = fusion_model(img_hash_raw, txt_hash_raw, var_img_proxy)
-                txt_hash_fused = fusion_model(txt_hash_raw, img_hash_raw, var_txt_proxy)
+                # img_hash_fused = fusion_model(img_hash_raw, txt_hash_raw, var_img_proxy)
+                # txt_hash_fused = fusion_model(txt_hash_raw, img_hash_raw, var_txt_proxy)
+
+                loss_proto = torch.tensor(0.0).cuda()
+                # 设置warm-up
+                if args.max_epochs <= 20:
+                    warm_up = 5
+                else:
+                    warm_up = int(0.1 * args.max_epochs)
+                
+                if epoch < warm_up:
+                    t = float(epoch) / float(warm_up)
+
+                    img_hash_final = img_hash_raw
+                    txt_hash_final = txt_hash_raw
+
+                else:
+                    t = 1.0
+
+                    var_img_proxy = logvar_img.exp().mean(dim=1, keepdim=True) # [Batch, 1]
+                    var_txt_proxy = logvar_txt.exp().mean(dim=1, keepdim=True) # [Batch, 1]
+                    img_hash_fused = fusion_model(img_hash_raw, txt_hash_raw, var_img_proxy)
+                    txt_hash_fused = fusion_model(txt_hash_raw, img_hash_raw, var_txt_proxy)
+                    evidencei2t = evidence_model(img_hash_fused, txt_hash_fused, 'i2t')
+                    evidencet2i = evidence_model(img_hash_fused, txt_hash_fused, 't2i')
+
+                    u_i2t_diag = compute_uncertainty_diag(evidence=evidencei2t)
+                    u_t2i_diag = compute_uncertainty_diag(evidence=evidencet2i)                    
+                    u_img_in = u_i2t_diag.view(-1, 1).detach()
+                    u_txt_in = u_t2i_diag.view(-1, 1).detach()
+
+                    delta_img = gcn_img(img_hash_fused, u_img_in)
+                    delta_txt = gcn_txt(txt_hash_fused, u_txt_in)
+
+                    img_hash_final = img_hash_fused + delta_img * gcn_img.alpha
+                    txt_hash_final = txt_hash_fused + delta_txt * gcn_txt.alpha
+
+
+                    loss_proto_img = proto_model(mu_img, logvar_img, label, shared_W)
+                    loss_proto_txt = proto_model(mu_txt, logvar_txt, label, shared_W)
+                    loss_proto = loss_proto_img + loss_proto_txt
 
                 '''
                 1215
@@ -403,34 +442,30 @@ def main():
                 '''
                 
                 # DECH 原始损失 (基于哈希码) ---
-                evidencei2t = evidence_model(img_hash_fused, txt_hash_fused, 'i2t')
-                evidencet2i = evidence_model(img_hash_fused, txt_hash_fused, 't2i')
+                # evidencei2t = evidence_model(img_hash_fused, txt_hash_fused, 'i2t')
+                # evidencet2i = evidence_model(img_hash_fused, txt_hash_fused, 't2i')
 
-                u_i2t_diag = compute_uncertainty_diag(evidence=evidencei2t)
-                u_t2i_diag = compute_uncertainty_diag(evidence=evidencet2i)
-                
-
-                # 简化，将两个方向不确定性的平均值，作为着对样本总的不确定性
-                uncertaint_joint = (u_i2t_diag + u_t2i_diag) / 2
+                # u_i2t_diag = compute_uncertainty_diag(evidence=evidencei2t)
+                # u_t2i_diag = compute_uncertainty_diag(evidence=evidencet2i)
 
                 #==============1212
-                loss_proto_img = proto_model(mu_img, logvar_img, label, shared_W)
-                loss_proto_txt = proto_model(mu_txt, logvar_txt, label, shared_W)
+                # loss_proto_img = proto_model(mu_img, logvar_img, label, shared_W)
+                # loss_proto_txt = proto_model(mu_txt, logvar_txt, label, shared_W)
                 
-                loss_proto = loss_proto_img + loss_proto_txt
+                # loss_proto = loss_proto_img + loss_proto_txt
                 #==============
 
                 # 为 GCN 准备不确定性输入 
-                u_img_in = u_i2t_diag.view(-1, 1).detach()
-                u_txt_in = u_t2i_diag.view(-1, 1).detach()
+                # u_img_in = u_i2t_diag.view(-1, 1).detach()
+                # u_txt_in = u_t2i_diag.view(-1, 1).detach()
 
                 # GCN 增强
-                delta_img = gcn_img(img_hash_fused, u_img_in)
-                delta_txt = gcn_txt(txt_hash_fused, u_txt_in)
+                # delta_img = gcn_img(img_hash_fused, u_img_in)
+                # delta_txt = gcn_txt(txt_hash_fused, u_txt_in)
 
                 # 融合
-                img_hash_code = img_hash_fused + delta_img * gcn_img.alpha
-                txt_hash_code = txt_hash_fused + delta_txt * gcn_txt.alpha
+                # img_hash_code = img_hash_fused + delta_img * gcn_img.alpha
+                # txt_hash_code = txt_hash_fused + delta_txt * gcn_txt.alpha
 
                 # (可选) 再次 Tanh 约束范围
                 # 如果您的后续 Loss 对范围敏感，建议加上。如果用 MSE 则不强制。
@@ -438,21 +473,13 @@ def main():
                 # img_hash_code = torch.tanh(img_hash_code)
                 # txt_hash_code = torch.tanh(txt_hash_code)
 
+                # 量化损失 - 更新
+                loss_q = calculate_quantization_loss(img_hash_final, txt_hash_final)
 
                 # 使用更新后的哈希码
-                evidencei2t = evidence_model(img_hash_code, txt_hash_code, 'i2t')
-                evidencet2i = evidence_model(img_hash_code, txt_hash_code, 't2i')
+                evidencei2t = evidence_model(img_hash_final, txt_hash_final, 'i2t')
+                evidencet2i = evidence_model(img_hash_final, txt_hash_final, 't2i')
                 
-                # 重复流程
-                # ==================================================
-                u_i2t_diag = compute_uncertainty_diag(evidence=evidencei2t)
-                u_t2i_diag = compute_uncertainty_diag(evidence=evidencet2i)
-                uncertaint_joint = (u_i2t_diag + u_t2i_diag) / 2
-                # ==================================================
-
-                # 量化损失 - 更新
-                loss_q = calculate_quantization_loss(img_hash_code, txt_hash_code)
-
                 # 准备标签
                 GND = (label @ label.T > 0).float().view(-1, 1)
                 target = torch.cat([GND, 1 - GND], dim=1)
@@ -460,6 +487,13 @@ def main():
                 lossI2t = edl_log_loss(evidencei2t, target, epoch, 2, 42)
                 lossT2i = edl_log_loss(evidencet2i, target, epoch, 2, 42)
                 loss_dech = lossI2t + lossT2i
+
+                # 重复流程
+                # ==================================================
+                u_i2t_diag = compute_uncertainty_diag(evidence=evidencei2t)
+                u_t2i_diag = compute_uncertainty_diag(evidence=evidencet2i)
+                uncertaint_joint = (u_i2t_diag + u_t2i_diag) / 2
+                # ==================================================
                 
                 # # 证据联合损失，与dech损失重复
                 # # joint_evidence = evidencei2t + evidencet2i
@@ -502,26 +536,16 @@ def main():
                     loss_cl = consistency_learning_loss(img_hash_raw, txt_hash_raw, weights=cl_weights)
                 else:
                     loss_cl = 0.0
-                
-            
-                
-                if args.max_epochs <= 20:
-                    warm_up = 5
-                else:
-                    warm_up = int(0.1 * args.max_epochs)
-                
-                if epoch < warm_up:
-                    t = float(epoch) / float(warm_up)
-                else:
-                    t = 1.0
+
 
                 loss_fml_mix = loss_excess + (t * loss_aleatoric_scaled)
 
 
                 # loss = args.alpha * loss_dech + args.delta * loss_q + args.beta * loss_fml_mix + args.gamma * loss_cl + args.eta * loss_vib + args.theta * loss_proto
+                loss = args.alpha * loss_dech
 
 
-                loss = args.alpha * loss_dech + args.beta * loss_excess
+                # loss = args.alpha * loss_dech + args.beta * loss_excess
                 # loss = args.alpha * loss_dech + args.delta * loss_q
                 # loss = args.alpha * loss_dech + args.beta * loss_excess + args.gamma * loss_cl
                 
