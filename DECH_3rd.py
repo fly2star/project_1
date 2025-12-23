@@ -331,7 +331,7 @@ def main():
 
     # 使用单个优化器管理所有参数，避免对同一参数进行多次更新
     # 1e-4 ------>1e-5-------> 5e-4------>5e-5
-    optimizer = torch.optim.Adam(unique_params, 5e-5)
+    optimizer = torch.optim.Adam(unique_params, 1e-4)
 
     # fuzzy_module = FuzzyLogicModule(feature_dim=args.bit, num_classes=num_classes, device=args.gpuIdx, use_relu=args.use_relu).cuda()
     # parameters = list(image_model.parameters()) + list(text_model.parameters())  + list(evidence_model.parameters()) + list(fuzzy_module.parameters())
@@ -541,8 +541,8 @@ def main():
                 loss_fml_mix = loss_excess + (t * loss_aleatoric_scaled)
 
 
-                # loss = args.alpha * loss_dech + args.delta * loss_q + args.beta * loss_fml_mix + args.gamma * loss_cl + args.eta * loss_vib + args.theta * loss_proto
-                loss = args.alpha * loss_dech
+                loss = args.alpha * loss_dech + args.delta * loss_q + args.beta * loss_fml_mix + args.gamma * loss_cl + args.eta * loss_vib + args.theta * loss_proto
+                # loss = args.alpha * loss_dech
 
 
                 # loss = args.alpha * loss_dech + args.beta * loss_excess
