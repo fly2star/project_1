@@ -351,6 +351,7 @@ def main():
 
     # 定义优化器
     # 基础学习率
+    # 1e-4 -----> 1e-5
     base_lr = 1e-4
 
     optimizer = torch.optim.Adam([
@@ -361,7 +362,7 @@ def main():
     ])
 
     # 保留 umique_params 以便后续使用, 后续训练循环里的 clip_grad_norm_ 也需要
-    parameters = unique_params
+    # parameters = unique_params
 
     if args.continue_eval == 1:
         status_dict = torch.load(model_save_path, weights_only=True)
@@ -501,6 +502,9 @@ def main():
                 # 使用更新后的哈希码
                 evidencei2t = evidence_model(img_hash_final, txt_hash_final, 'i2t')
                 evidencet2i = evidence_model(img_hash_final, txt_hash_final, 't2i')
+
+                # 新加入正交约束函数1226
+                loss_indep = distinctiveness_loss(img_hash_final) + distinctiveness_loss(txt_hash_final)
                 
                 # 准备标签
                 GND = (label @ label.T > 0).float().view(-1, 1)
@@ -564,13 +568,14 @@ def main():
 
 
                 # loss = args.alpha * loss_dech + args.delta * loss_q + args.beta * loss_fml_mix + args.gamma * loss_cl + args.eta * loss_vib + args.theta * loss_proto
-                loss = args.alpha * loss_dech + args.delta * loss_q + args.theta * loss_proto
+                # loss = args.alpha * loss_dech + args.delta * loss_q + args.theta * loss_proto
 
 
-                # loss = args.alpha * loss_dech + args.beta * loss_excess
-                # loss = args.alpha * loss_dech + args.delta * loss_q
-                # loss = args.alpha * loss_dech + args.beta * loss_excess + args.gamma * loss_cl
-                
+                # loss = args.alpha * loss_dech
+                # loss = args.alpha * loss_dech + args.beta * loss_excess           
+                # loss = args.alpha * loss_dech + args.delta * loss_q + args.beta * loss_fml_mix + args.theta * loss_proto
+                # loss = args.alpha * loss_dech + args.theta * loss_proto
+                loss = args.alpha * loss_dech + args.delta * loss_q  + 0.01 * loss_indep
                             
                 # 使用单个优化器
                 optimizer.zero_grad()
