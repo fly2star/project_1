@@ -365,3 +365,33 @@ def vib_kl_loss(mu, logvar):
     # 这里的求和是针对 bit 维度，最后对 batch 取平均
     kl_div = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)
     return kl_div.mean()
+
+
+def distinctiveness_loss(H):
+    """
+    [BMIH 论文创新点] 正交约束/独立性约束
+    计算哈希码的比特独立性，防止特征坍塌 (Bit Correlation)。
+    
+    Args:
+        H: [Batch, Bit] 的连续哈希码 (通常是 tanh 的输出)
+    Returns:
+        loss: 标量
+    """
+    batch_size = H.size(0)
+    if batch_size == 0:
+        return torch.tensor(0.0).to(H.device)
+    
+    # 1. 计算格拉姆矩阵 (Gram Matrix): H^T * H
+    # 形状: [Bit, Bit]
+    gram_matrix = torch.mm(H.t(), H)
+    
+    # 2. 构建目标单位矩阵 (Identity Matrix)
+    # 我们希望 H^T * H 接近 batch_size * I
+    # 使用 H.device 确保设备一致
+    identity = torch.eye(H.size(1)).to(H.device) * batch_size
+    
+    # 3. 计算 Frobenius 范数 (矩阵元素的平方和开根号)
+    loss_dist = torch.norm(gram_matrix - identity, p='fro')
+    
+    # 4. 归一化，避免 Batch Size 变化导致 Loss 波动太大
+    return loss_dist / (batch_size * batch_size)

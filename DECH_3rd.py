@@ -321,25 +321,48 @@ def main():
     #---1215
     fusion_model = UncertaintyFusion(args.bit).cuda()
 
-    # 聚合全部参数并去重（因为 shared_W 在 image_model 和 text_model 中是同一对象）
-    all_params = list(image_model.parameters()) + list(text_model.parameters()) + \
+    
+    # =======================================================================
+    # 差分学习率修改
+    # =======================================================================
+
+    # 首先聚合所有参数
+    all_raw_params = list(image_model.parameters()) + list(text_model.parameters()) + \
                     list(evidence_model.parameters()) + \
                     list(gcn_img.parameters()) + list(gcn_txt.parameters()) + \
                     list(proto_model.parameters()) + \
                     list (fusion_model.parameters())
-    unique_params = list({id(p): p for p in all_params}.values())
+    # 去重
+    unique_params = list({id(p): p for p in all_raw_params}.values())
+    # 识别骨干网络(Backbone)的参数 ID
+    backbone_ids = set(map(id, image_model.parameters())) | set(map(id, text_model.parameters()))
+    # 将去重的参数分成两组
+    backbone_group = []
+    new_module_group = []
 
-    # 使用单个优化器管理所有参数，避免对同一参数进行多次更新
-    # 1e-4 ------>1e-5-------> 5e-4------>5e-5
-    optimizer = torch.optim.Adam(unique_params, 1e-4)
+    for p in unique_params:
+        if id(p) in backbone_ids:
+            backbone_group.append(p)
+        else:
+            new_module_group.append(p)
+    
+    # 打印两组参数的数量
+    print(f'Backbone parameters: {len(backbone_group)}, New module parameters: {len(new_module_group)}')
 
-    # fuzzy_module = FuzzyLogicModule(feature_dim=args.bit, num_classes=num_classes, device=args.gpuIdx, use_relu=args.use_relu).cuda()
-    # parameters = list(image_model.parameters()) + list(text_model.parameters())  + list(evidence_model.parameters()) + list(fuzzy_module.parameters())
+    # 定义优化器
+    # 基础学习率
+    # 1e-4 -----> 1e-5
+    base_lr = 1e-4
 
-    # 旧的按-module 优化器已合并为单个 `optimizer`，这里保留 unique 参数列表以供裁剪和调试
-    parameters = unique_params
+    optimizer = torch.optim.Adam([
+        # 骨干网络使用较低学习率
+        {'params': backbone_group, 'lr': base_lr * 0.1},
+        # 新增模块使用基础学习率
+        {'params': new_module_group, 'lr': base_lr}
+    ])
 
-    # optimizerFuzzy = torch.optim.Adam(fuzzy_module.parameters(),1e-4)
+    # 保留 umique_params 以便后续使用, 后续训练循环里的 clip_grad_norm_ 也需要
+    # parameters = unique_params
 
     if args.continue_eval == 1:
         status_dict = torch.load(model_save_path, weights_only=True)
@@ -479,6 +502,9 @@ def main():
                 # 使用更新后的哈希码
                 evidencei2t = evidence_model(img_hash_final, txt_hash_final, 'i2t')
                 evidencet2i = evidence_model(img_hash_final, txt_hash_final, 't2i')
+
+                # 新加入正交约束函数1226
+                loss_indep = distinctiveness_loss(img_hash_final) + distinctiveness_loss(txt_hash_final)
                 
                 # 准备标签
                 GND = (label @ label.T > 0).float().view(-1, 1)
@@ -541,14 +567,15 @@ def main():
                 loss_fml_mix = loss_excess + (t * loss_aleatoric_scaled)
 
 
-                loss = args.alpha * loss_dech + args.delta * loss_q + args.beta * loss_fml_mix + args.gamma * loss_cl + args.eta * loss_vib + args.theta * loss_proto
+                # loss = args.alpha * loss_dech + args.delta * loss_q + args.beta * loss_fml_mix + args.gamma * loss_cl + args.eta * loss_vib + args.theta * loss_proto
+                # loss = args.alpha * loss_dech + args.delta * loss_q + args.theta * loss_proto
+
+
                 # loss = args.alpha * loss_dech
-
-
-                # loss = args.alpha * loss_dech + args.beta * loss_excess
-                # loss = args.alpha * loss_dech + args.delta * loss_q
-                # loss = args.alpha * loss_dech + args.beta * loss_excess + args.gamma * loss_cl
-                
+                # loss = args.alpha * loss_dech + args.beta * loss_excess           
+                # loss = args.alpha * loss_dech + args.delta * loss_q + args.beta * loss_fml_mix + args.theta * loss_proto
+                # loss = args.alpha * loss_dech + args.theta * loss_proto
+                loss = args.alpha * loss_dech + args.delta * loss_q  + 0.01 * loss_indep
                             
                 # 使用单个优化器
                 optimizer.zero_grad()
@@ -606,6 +633,7 @@ def main():
 
         # torch.save(state, save_path)
         # print(f'Model checkpoint saved at: {save_path}')
+
 
     eval_res()
     final_message = (
